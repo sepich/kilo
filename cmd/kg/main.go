@@ -60,6 +60,11 @@ var (
 	}, ", ")
 	availableCompatibilities = strings.Join([]string{
 		"flannel",
+		"cilium",
+	}, ", ")
+	availableIPAMs = strings.Join([]string{
+		"kubernetes",
+		"cilium-cluster-pool",
 	}, ", ")
 	availableEncapsulations = strings.Join([]string{
 		string(encapsulation.Never),
@@ -101,6 +106,7 @@ var (
 	cni                   bool
 	cniPath               string
 	compatibility         string
+	ipam                  string
 	encapsulate           string
 	granularity           string
 	hostname              string
@@ -134,6 +140,7 @@ func init() {
 	cmd.Flags().BoolVar(&cni, "cni", true, "Should Kilo manage the node's CNI configuration?")
 	cmd.Flags().StringVar(&cniPath, "cni-path", mesh.DefaultCNIPath, "Path to CNI config.")
 	cmd.Flags().StringVar(&compatibility, "compatibility", "", fmt.Sprintf("Should Kilo run in compatibility mode? Possible values: %s", availableCompatibilities))
+	cmd.Flags().StringVar(&ipam, "ipam", "", fmt.Sprintf("How to discover each Node podCIDRs? Possible values: %s", availableIPAMs))
 	cmd.Flags().StringVar(&encapsulate, "encapsulate", string(encapsulation.Always), fmt.Sprintf("When should Kilo encapsulate packets within a location? Possible values: %s", availableEncapsulations))
 	cmd.Flags().StringVar(&granularity, "mesh-granularity", string(mesh.LogicalGranularity), fmt.Sprintf("The granularity of the network mesh to create. Possible values: %s", availableGranularities))
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig.")
@@ -226,6 +233,12 @@ func runRoot(_ *cobra.Command, _ []string) error {
 		enc = encapsulation.NewIPIP(e)
 	}
 
+	switch ipam {
+	case "cilium-cluster-pool":
+	default:
+		ipam = "kubernetes"
+	}
+
 	gr := mesh.Granularity(granularity)
 	switch gr {
 	case mesh.LogicalGranularity:
@@ -235,16 +248,17 @@ func runRoot(_ *cobra.Command, _ []string) error {
 	}
 
 	var b mesh.Backend
+	var c *kubernetes.Clientset
 	switch backend {
 	case k8s.Backend:
 		config, err := clientcmd.BuildConfigFromFlags(master, kubeconfig)
 		if err != nil {
 			return fmt.Errorf("failed to create Kubernetes config: %v", err)
 		}
-		c := kubernetes.NewForConfigOrDie(config)
+		c = kubernetes.NewForConfigOrDie(config)
 		kc := kiloclient.NewForConfigOrDie(config)
 		ec := apiextensions.NewForConfigOrDie(config)
-		b = k8s.New(c, kc, ec, topologyLabel, log.With(logger, "component", "k8s backend"))
+		b = k8s.New(c, kc, ec, topologyLabel, ipam, routeInternalIP, log.With(logger, "component", "k8s backend"))
 	default:
 		return fmt.Errorf("backend %v unknown; possible values are: %s", backend, availableBackends)
 	}
@@ -262,7 +276,7 @@ func runRoot(_ *cobra.Command, _ []string) error {
 		serviceCIDRs = append(serviceCIDRs, s)
 	}
 
-	m, err := mesh.New(b, enc, gr, hostname, port, s, local, cni, cniPath, iface, cleanUp, cleanUpIface, createIface, mtu, resyncPeriod, prioritisePrivateAddr, iptablesForwardRule, routeInternalIP, serviceCIDRs, log.With(logger, "component", "kilo"), registry)
+	m, err := mesh.New(b, enc, gr, hostname, port, s, local, cni, cniPath, iface, cleanUp, cleanUpIface, createIface, mtu, resyncPeriod, prioritisePrivateAddr, iptablesForwardRule, routeInternalIP, serviceCIDRs, ipam, c, log.With(logger, "component", "kilo"), registry)
 	if err != nil {
 		return fmt.Errorf("failed to create Kilo mesh: %v", err)
 	}

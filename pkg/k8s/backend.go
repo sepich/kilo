@@ -63,6 +63,7 @@ const (
 	discoveredEndpointsKey       = "kilo.squat.ai/discovered-endpoints"
 	allowedLocationIPsKey        = "kilo.squat.ai/allowed-location-ips"
 	granularityKey               = "kilo.squat.ai/granularity"
+	podCidrKey                   = "kilo.squat.ai/pod-cidr"
 	// RegionLabelKey is the key for the well-known Kubernetes topology region label.
 	RegionLabelKey  = "topology.kubernetes.io/region"
 	jsonPatchSlash  = "~1"
@@ -87,11 +88,13 @@ func (b *backend) Peers() mesh.PeerBackend {
 }
 
 type nodeBackend struct {
-	client        kubernetes.Interface
-	events        chan *mesh.NodeEvent
-	informer      cache.SharedIndexInformer
-	lister        v1listers.NodeLister
-	topologyLabel string
+	client          kubernetes.Interface
+	events          chan *mesh.NodeEvent
+	informer        cache.SharedIndexInformer
+	lister          v1listers.NodeLister
+	topologyLabel   string
+	ipam            string
+	routeInternalIP bool
 }
 
 type peerBackend struct {
@@ -103,7 +106,7 @@ type peerBackend struct {
 }
 
 // New creates a new instance of a mesh.Backend.
-func New(c kubernetes.Interface, kc kiloclient.Interface, ec apiextensions.Interface, topologyLabel string, l log.Logger) mesh.Backend {
+func New(c kubernetes.Interface, kc kiloclient.Interface, ec apiextensions.Interface, topologyLabel, ipam string, routeInternalIP bool, l log.Logger) mesh.Backend {
 	ni := v1informers.NewNodeInformer(c, 5*time.Minute, nil)
 	pi := v1alpha1informers.NewPeerInformer(kc, 5*time.Minute, nil)
 
@@ -111,11 +114,13 @@ func New(c kubernetes.Interface, kc kiloclient.Interface, ec apiextensions.Inter
 
 	return &backend{
 		&nodeBackend{
-			client:        c,
-			events:        make(chan *mesh.NodeEvent),
-			informer:      ni,
-			lister:        v1listers.NewNodeLister(ni.GetIndexer()),
-			topologyLabel: topologyLabel,
+			client:          c,
+			events:          make(chan *mesh.NodeEvent),
+			informer:        ni,
+			lister:          v1listers.NewNodeLister(ni.GetIndexer()),
+			topologyLabel:   topologyLabel,
+			ipam:            ipam,
+			routeInternalIP: routeInternalIP,
 		},
 		&peerBackend{
 			client:           kc,
@@ -150,7 +155,7 @@ func (nb *nodeBackend) Get(name string) (*mesh.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return translateNode(n, nb.topologyLabel), nil
+	return nb.translateNode(n), nil
 }
 
 // Init initializes the backend; for this backend that means
@@ -170,7 +175,7 @@ func (nb *nodeBackend) Init(ctx context.Context) error {
 					// Failed to decode Node; ignoring...
 					return
 				}
-				nb.events <- &mesh.NodeEvent{Type: mesh.AddEvent, Node: translateNode(n, nb.topologyLabel)}
+				nb.events <- &mesh.NodeEvent{Type: mesh.AddEvent, Node: nb.translateNode(n)}
 			},
 			UpdateFunc: func(old, obj interface{}) {
 				n, ok := obj.(*v1.Node)
@@ -183,7 +188,7 @@ func (nb *nodeBackend) Init(ctx context.Context) error {
 					// Failed to decode Node; ignoring...
 					return
 				}
-				nb.events <- &mesh.NodeEvent{Type: mesh.UpdateEvent, Node: translateNode(n, nb.topologyLabel), Old: translateNode(o, nb.topologyLabel)}
+				nb.events <- &mesh.NodeEvent{Type: mesh.UpdateEvent, Node: nb.translateNode(n), Old: nb.translateNode(o)}
 			},
 			DeleteFunc: func(obj interface{}) {
 				n, ok := obj.(*v1.Node)
@@ -191,7 +196,7 @@ func (nb *nodeBackend) Init(ctx context.Context) error {
 					// Failed to decode Node; ignoring...
 					return
 				}
-				nb.events <- &mesh.NodeEvent{Type: mesh.DeleteEvent, Node: translateNode(n, nb.topologyLabel)}
+				nb.events <- &mesh.NodeEvent{Type: mesh.DeleteEvent, Node: nb.translateNode(n)}
 			},
 		},
 	)
@@ -206,7 +211,7 @@ func (nb *nodeBackend) List() ([]*mesh.Node, error) {
 	}
 	nodes := make([]*mesh.Node, len(ns))
 	for i := range ns {
-		nodes[i] = translateNode(ns[i], nb.topologyLabel)
+		nodes[i] = nb.translateNode(ns[i])
 	}
 	return nodes, nil
 }
@@ -241,6 +246,9 @@ func (nb *nodeBackend) Set(ctx context.Context, name string, node *mesh.Node) er
 		n.ObjectMeta.Annotations[discoveredEndpointsKey] = string(discoveredEndpoints)
 	}
 	n.ObjectMeta.Annotations[granularityKey] = string(node.Granularity)
+	if nb.ipam == "cilium-cluster-pool" {
+		n.ObjectMeta.Annotations[podCidrKey] = node.Subnet.String()
+	}
 	oldData, err := json.Marshal(old)
 	if err != nil {
 		return err
@@ -265,11 +273,20 @@ func (nb *nodeBackend) Watch() <-chan *mesh.NodeEvent {
 }
 
 // translateNode translates a Kubernetes Node to a mesh.Node.
-func translateNode(node *v1.Node, topologyLabel string) *mesh.Node {
+func (nb *nodeBackend) translateNode(node *v1.Node) *mesh.Node {
 	if node == nil {
 		return nil
 	}
-	_, subnet, err := net.ParseCIDR(node.Spec.PodCIDR)
+	var subnet *net.IPNet
+	var err error
+	switch nb.ipam {
+	case "cilium-cluster-pool":
+		if c, ok := node.ObjectMeta.Annotations[podCidrKey]; ok {
+			_, subnet, err = net.ParseCIDR(c)
+		}
+	default:
+		_, subnet, err = net.ParseCIDR(node.Spec.PodCIDR)
+	}
 	// The subnet should only ever fail to parse if the pod CIDR has not been set,
 	// so in this case set the subnet to nil and let the node be updated.
 	if err != nil {
@@ -279,7 +296,7 @@ func translateNode(node *v1.Node, topologyLabel string) *mesh.Node {
 	// Allow the region to be overridden by an explicit location.
 	location, ok := node.ObjectMeta.Annotations[locationAnnotationKey]
 	if !ok {
-		location = node.ObjectMeta.Labels[topologyLabel]
+		location = node.ObjectMeta.Labels[nb.topologyLabel]
 	}
 	// Allow the endpoint to be overridden.
 	endpoint := wireguard.ParseEndpoint(node.ObjectMeta.Annotations[forceEndpointAnnotationKey])
@@ -294,6 +311,10 @@ func translateNode(node *v1.Node, topologyLabel string) *mesh.Node {
 	// Set the noInternalIP flag, if force-internal-ip annotation was set to "".
 	noInternalIP := false
 	if s, ok := node.ObjectMeta.Annotations[forceInternalIPAnnotationKey]; ok && (s == "" || s == "-") {
+		noInternalIP = true
+		internalIP = nil
+	}
+	if !nb.routeInternalIP {
 		noInternalIP = true
 		internalIP = nil
 	}
