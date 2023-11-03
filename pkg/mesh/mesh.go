@@ -20,7 +20,9 @@ package mesh
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"k8s.io/client-go/kubernetes"
 	"net"
 	"os"
 	"sync"
@@ -73,6 +75,8 @@ type Mesh struct {
 	subnet              *net.IPNet
 	table               *route.Table
 	wireGuardIP         *net.IPNet
+	ipam                string
+	client              *kubernetes.Clientset
 
 	// nodes and peers are mutable fields in the struct
 	// and need to be guarded.
@@ -88,8 +92,16 @@ type Mesh struct {
 	logger           log.Logger
 }
 
+type CiliumNode struct {
+	Spec struct {
+		Ipam struct {
+			PodCIDRs []string `json:"podCIDRs"`
+		} `json:"ipam"`
+	} `json:"spec"`
+}
+
 // New returns a new Mesh instance.
-func New(backend Backend, enc encapsulation.Encapsulator, granularity Granularity, hostname string, port int, subnet *net.IPNet, local, cni bool, cniPath, iface string, cleanup bool, cleanUpIface bool, createIface bool, mtu uint, resyncPeriod time.Duration, prioritisePrivateAddr, iptablesForwardRule, routeInternalIP bool, serviceCIDRs []*net.IPNet, logger log.Logger, registerer prometheus.Registerer) (*Mesh, error) {
+func New(backend Backend, enc encapsulation.Encapsulator, granularity Granularity, hostname string, port int, subnet *net.IPNet, local, cni bool, cniPath, iface string, cleanup bool, cleanUpIface bool, createIface bool, mtu uint, resyncPeriod time.Duration, prioritisePrivateAddr, iptablesForwardRule, routeInternalIP bool, serviceCIDRs []*net.IPNet, ipam string, client *kubernetes.Clientset, logger log.Logger, registerer prometheus.Registerer) (*Mesh, error) {
 	if err := os.MkdirAll(kiloPath, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory to store configuration: %v", err)
 	}
@@ -195,6 +207,8 @@ func New(backend Backend, enc encapsulation.Encapsulator, granularity Granularit
 		serviceCIDRs:        serviceCIDRs,
 		subnet:              subnet,
 		table:               route.NewTable(),
+		ipam:                ipam,
+		client:              client,
 		errorCounter: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "kilo_errors_total",
 			Help: "Number of errors that occurred while administering the mesh.",
@@ -400,6 +414,22 @@ func (m *Mesh) handleLocal(ctx context.Context, n *Node) {
 	if n.InternalIP == nil && !n.NoInternalIP {
 		n.InternalIP = m.internalIP
 	}
+	if m.ipam == "cilium-cluster-pool" {
+		subnet, err := getCiliumClusterPool(n, m.client, ctx)
+		if err != nil {
+			level.Error(m.logger).Log("error", fmt.Sprintf("failed to get cilium cluster-pool: %v", err, "node", n.Name))
+		} else {
+			n.Subnet = subnet
+		}
+	}
+	if m.granularity == FullGranularity {
+		//preserve kilo0 IP if already set
+		if n.WireGuardIP != nil && n.WireGuardIP.String() != m.wireGuardIP.String() {
+			level.Info(m.logger).Log("keeping node IP", n.WireGuardIP.String(), "mesh IP", m.wireGuardIP.String())
+			m.wireGuardIP = n.WireGuardIP
+		}
+	}
+
 	// Compare the given node to the calculated local node.
 	// Take leader, location, and subnet from the argument, as these
 	// are not determined by kilo.
@@ -832,4 +862,27 @@ func discoverNATEndpoints(nodes map[string]*Node, peers map[string]*Peer, conf *
 	}
 	level.Debug(logger).Log("msg", "Discovered WireGuard NAT Endpoints", "DiscoveredEndpoints", natEndpoints)
 	return natEndpoints
+}
+
+// get podCIDRs for Node in Cilium cluster-pool IPAM mode
+func getCiliumClusterPool(n *Node, client *kubernetes.Clientset, ctx context.Context) (*net.IPNet, error) {
+	data, err := client.RESTClient().Get().
+		AbsPath("/apis/cilium.io/v2").Resource("ciliumnodes").Name(n.Name).DoRaw(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%v: %s", err, string(data))
+	}
+	var cn CiliumNode
+	err = json.Unmarshal(data, &cn)
+	if err != nil {
+		return nil, err
+	}
+	if len(cn.Spec.Ipam.PodCIDRs) == 0 {
+		return nil, fmt.Errorf("podCIDR list is empty")
+	}
+	// list of [ipv4, ipv6]
+	_, subnet, err := net.ParseCIDR(cn.Spec.Ipam.PodCIDRs[0])
+	if err != nil {
+		return nil, fmt.Errorf("parse podCIDRs error: %v, %s", err, cn.Spec.Ipam.PodCIDRs[0])
+	}
+	return subnet, nil
 }

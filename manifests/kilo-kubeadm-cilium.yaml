@@ -30,6 +30,12 @@ rules:
   - customresourcedefinitions
   verbs:
   - get
+- apiGroups:
+    - cilium.io
+  resources:
+    - ciliumnodes
+  verbs:
+    - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

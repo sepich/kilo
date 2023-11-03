@@ -4,7 +4,7 @@ export GO111MODULE=on
 OS ?= $(shell go env GOOS)
 ARCH ?= $(shell go env GOARCH)
 ALL_ARCH := amd64 arm arm64
-DOCKER_ARCH := "amd64" "arm v7" "arm64 v8"
+DOCKER_ARCH := "amd64" "arm64 v8" # "arm v7"
 ifeq ($(OS),linux)
     BINS := bin/$(OS)/$(ARCH)/kg bin/$(OS)/$(ARCH)/kgctl
 else

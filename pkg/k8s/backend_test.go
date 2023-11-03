@@ -315,11 +315,12 @@ func TestTranslateNode(t *testing.T) {
 			subnet: "10.2.1.0/24",
 		},
 	} {
+		nb := nodeBackend{topologyLabel: RegionLabelKey}
 		n := &v1.Node{}
 		n.ObjectMeta.Annotations = tc.annotations
 		n.ObjectMeta.Labels = tc.labels
 		n.Spec.PodCIDR = tc.subnet
-		node := translateNode(n, RegionLabelKey)
+		node := nb.translateNode(n)
 		if diff := pretty.Compare(node, tc.out); diff != "" {
 			t.Errorf("test case %q: got diff: %v", tc.name, diff)
 		}

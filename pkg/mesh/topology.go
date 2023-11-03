@@ -217,10 +217,36 @@ func NewTopology(nodes map[string]*Node, peers map[string]*Peer, granularity Gra
 	}
 	// Allocate IPs to the segment leaders in a stable, coordination-free manner.
 	a := newAllocator(*subnet)
+	// TODO: account for non-ready nodes
+	used := make(map[string]struct{})
+	for _, node := range nodes {
+		if node.WireGuardIP != nil {
+			used[node.WireGuardIP.IP.String()] = struct{}{}
+		}
+	}
 	for _, segment := range t.segments {
-		ipNet := a.next()
-		if ipNet == nil {
-			return nil, errors.New("failed to allocate an IP address; ran out of IP addresses")
+		var ipNet *net.IPNet
+		// reuse IP if already allocated and we are in full-mesh
+		if t.leader && granularity == FullGranularity && len(segment.hostnames) == 1 {
+			ipNet = nodes[segment.hostnames[0]].WireGuardIP
+			if ipNet == nil {
+				level.Info(t.logger).Log("msg", "no previous IP found for node", "node", segment.hostnames[0])
+				for {
+					ipNet = a.next()
+					if ipNet == nil {
+						return nil, errors.New("failed to allocate an IP address; ran out of IP addresses")
+					}
+					if _, ok := used[ipNet.IP.String()]; !ok {
+						level.Info(t.logger).Log("next available IP", ipNet.IP.String(), "used", used)
+						break
+					}
+				}
+			}
+		} else {
+			ipNet = a.next()
+			if ipNet == nil {
+				return nil, errors.New("failed to allocate an IP address; ran out of IP addresses")
+			}
 		}
 		segment.wireGuardIP = ipNet.IP
 		segment.allowedIPs = append(segment.allowedIPs, *oneAddressCIDR(ipNet.IP))
