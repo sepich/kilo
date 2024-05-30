@@ -54,13 +54,19 @@ const (
 	logLevelNone  = "none"
 )
 
+// Compatibility modes.
+const (
+	compatFlannel = "flannel"
+	compatCilium  = "cilium"
+)
+
 var (
 	availableBackends = strings.Join([]string{
 		k8s.Backend,
 	}, ", ")
 	availableCompatibilities = strings.Join([]string{
-		"flannel",
-		"cilium",
+		compatFlannel,
+		compatCilium,
 	}, ", ")
 	availableIPAMs = strings.Join([]string{
 		"kubernetes",
@@ -226,9 +232,9 @@ func runRoot(_ *cobra.Command, _ []string) error {
 
 	var enc encapsulation.Encapsulator
 	switch compatibility {
-	case "flannel":
+	case compatFlannel:
 		enc = encapsulation.NewFlannel(e)
-	case "cilium":
+	case compatCilium:
 		enc = encapsulation.NewCilium(e)
 	default:
 		enc = encapsulation.NewIPIP(e)
