@@ -355,6 +355,7 @@ func (nb *nodeBackend) translateNode(node *v1.Node) *mesh.Node {
 		switch meshGranularity {
 		case mesh.LogicalGranularity:
 		case mesh.FullGranularity:
+		case mesh.CrossGranularity:
 		default:
 			meshGranularity = ""
 		}
