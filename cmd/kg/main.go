@@ -80,7 +80,7 @@ var (
 	availableGranularities = strings.Join([]string{
 		string(mesh.LogicalGranularity),
 		string(mesh.FullGranularity),
-		string(mesh.CrossGranularity),
+		string(mesh.SubnetGranularity),
 	}, ", ")
 	availableLogLevels = strings.Join([]string{
 		logLevelAll,
@@ -250,7 +250,7 @@ func runRoot(_ *cobra.Command, _ []string) error {
 	switch gr {
 	case mesh.LogicalGranularity:
 	case mesh.FullGranularity:
-	case mesh.CrossGranularity:
+	case mesh.SubnetGranularity:
 	default:
 		return fmt.Errorf("mesh granularity %v unknown; possible values are: %s", granularity, availableGranularities)
 	}

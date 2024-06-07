@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"k8s.io/client-go/kubernetes"
 	"net"
@@ -135,6 +136,27 @@ func New(backend Backend, enc encapsulation.Encapsulator, granularity Granularit
 			kiloIface, _, err = wireguard.New(iface, mtu)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create WireGuard interface: %v", err)
+			}
+			if granularity == SubnetGranularity && enc.Strategy() == encapsulation.Never {
+				if err := cleanupTable(kiloTableIndex); err != nil {
+					level.Error(logger).Log("error", fmt.Sprintf("failed to clean up WireGuard routing table: %v", err))
+				}
+				rule := netlink.NewRule()
+				rule.Table = kiloTableIndex
+				rule.Mark = kiloTableIndex
+				rule.Mask = 0xFFFFFFFF
+				if err := netlink.RuleAdd(rule); err != nil {
+					level.Error(logger).Log("error", fmt.Sprintf("failed to create WireGuard routing rule: %v", err))
+				}
+				dr, err := defaultRoute()
+				if err != nil {
+					level.Error(logger).Log("error", fmt.Sprintf("failed to get default route: %v", err))
+				} else {
+					dr.Table = kiloTableIndex
+					if err := netlink.RouteAdd(dr); err != nil {
+						level.Error(logger).Log("error", fmt.Sprintf("failed to add default wg route: %v", err))
+					}
+				}
 			}
 		} else {
 			kiloIface = link.Attrs().Index
@@ -422,7 +444,7 @@ func (m *Mesh) handleLocal(ctx context.Context, n *Node) {
 			n.Subnet = subnet
 		}
 	}
-	if m.granularity == FullGranularity {
+	if m.granularity == FullGranularity || m.granularity == SubnetGranularity {
 		//preserve kilo0 IP if already set
 		if n.WireGuardIP != nil && n.WireGuardIP.String() != m.wireGuardIP.String() {
 			level.Info(m.logger).Log("keeping node IP", n.WireGuardIP.String(), "mesh IP", m.wireGuardIP.String())
@@ -495,7 +517,7 @@ func (m *Mesh) applyTopology() {
 		nodes[k] = m.nodes[k]
 		readyNodes++
 	}
-	// Ensure only ready nodes are considered.
+	// Ensure only ready peers are considered.
 	peers := make(map[string]*Peer)
 	var readyPeers float64
 	for k := range m.peers {
@@ -640,6 +662,20 @@ func (m *Mesh) cleanUp() {
 		if err := iproute.RemoveInterface(m.kiloIface); err != nil {
 			level.Error(m.logger).Log("error", fmt.Sprintf("failed to remove WireGuard interface: %v", err))
 			m.errorCounter.WithLabelValues("cleanUp").Inc()
+		}
+		if m.granularity == SubnetGranularity && m.enc.Strategy() == encapsulation.Never {
+			rule := netlink.NewRule()
+			rule.Table = kiloTableIndex
+			rule.Mark = kiloTableIndex
+			rule.Mask = 0xFFFFFFFF
+			if err := netlink.RuleDel(rule); err != nil {
+				level.Error(m.logger).Log("error", fmt.Sprintf("failed to remove WireGuard routing rule: %v", err))
+				m.errorCounter.WithLabelValues("cleanUp").Inc()
+			}
+			if err := cleanupTable(kiloTableIndex); err != nil {
+				level.Error(m.logger).Log("error", fmt.Sprintf("failed to clear WireGuard routing table: %v", err))
+				m.errorCounter.WithLabelValues("cleanUp").Inc()
+			}
 		}
 	}
 	{
@@ -885,4 +921,35 @@ func getCiliumClusterPool(n *Node, client *kubernetes.Clientset, ctx context.Con
 		return nil, fmt.Errorf("parse podCIDRs error: %v, %s", err, cn.Spec.Ipam.PodCIDRs[0])
 	}
 	return subnet, nil
+}
+
+// returns default route information
+func defaultRoute() (*netlink.Route, error) {
+	routes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, r := range routes {
+		if r.Dst == nil || r.Dst.String() == "0.0.0.0/0" || r.Dst.String() == "::/0" {
+			return &r, nil
+		}
+	}
+
+	return nil, errors.New("failed to find default route")
+}
+
+func cleanupTable(table int) error {
+	routes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
+	if err != nil {
+		return err
+	}
+	for _, r := range routes {
+		if r.Table == table {
+			if err := netlink.RouteDel(&r); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

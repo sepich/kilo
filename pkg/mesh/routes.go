@@ -137,7 +137,7 @@ func (t *Topology) Routes(kiloIfaceName string, kiloIface, privIface, tunlIface 
 	}
 	for _, segment := range t.segments {
 		// Add routes for the current segment if local is true.
-		if (segment.location == t.location) || (t.nodeLocation != "" && segment.nodeLocation == t.nodeLocation) {
+		if segment.location == t.location {
 			// If the local node does not have a private IP address,
 			// then skip adding routes, because the node is in its own location.
 			if local && t.privateIP != nil {
@@ -179,7 +179,7 @@ func (t *Topology) Routes(kiloIfaceName string, kiloIface, privIface, tunlIface 
 					}
 				}
 			}
-			// Continuing here prevents leaders form adding routes via WireGuard to
+			// Continuing here prevents leaders from adding routes via WireGuard to
 			// nodes in their own location.
 			continue
 		}
@@ -193,10 +193,11 @@ func (t *Topology) Routes(kiloIfaceName string, kiloIface, privIface, tunlIface 
 				Protocol:  unix.RTPROT_STATIC,
 			})
 			// Don't add routes through Kilo if the private IP
-			// equals the external IP. This means that the node
-			// is only accessible through an external IP and we
-			// cannot encapsulate traffic to an IP through the IP.
-			if segment.privateIPs == nil || segment.privateIPs[i].Equal(t.updateEndpoint(segment.endpoint, segment.key, &segment.persistentKeepalive).IP()) {
+			// equals the endpoint IP. This means that the node
+			// is only accessible through one IP and we
+			// cannot encapsulate traffic to the IP through the same IP.
+			// granularity=subnet can handle this via fwmark
+			if segment.privateIPs == nil || (segment.privateIPs[i].Equal(t.updateEndpoint(segment.endpoint, segment.key, &segment.persistentKeepalive).IP()) && t.granularity != SubnetGranularity) {
 				continue
 			}
 			// Add routes to the private IPs of nodes in other segments.

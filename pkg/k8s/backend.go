@@ -249,6 +249,9 @@ func (nb *nodeBackend) Set(ctx context.Context, name string, node *mesh.Node) er
 	if nb.ipam == "cilium-cluster-pool" {
 		n.ObjectMeta.Annotations[podCidrKey] = node.Subnet.String()
 	}
+	if node.Granularity == mesh.SubnetGranularity {
+		n.ObjectMeta.Annotations[locationAnnotationKey] = node.Location
+	}
 	oldData, err := json.Marshal(old)
 	if err != nil {
 		return err
@@ -355,7 +358,7 @@ func (nb *nodeBackend) translateNode(node *v1.Node) *mesh.Node {
 		switch meshGranularity {
 		case mesh.LogicalGranularity:
 		case mesh.FullGranularity:
-		case mesh.CrossGranularity:
+		case mesh.SubnetGranularity:
 		default:
 			meshGranularity = ""
 		}

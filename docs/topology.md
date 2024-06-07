@@ -47,10 +47,10 @@ kgctl graph | circo -Tsvg > cluster.svg
 
 <img src="./graphs/full-mesh.svg" />
 
-# Cross Mesh
+# Subnet Mesh
 
-In this topology all nodes within the same location are not encrypted. Traffic to any other node outside of current location is encrypted
-with direct node-to-node encryption. To use this mesh specify `--mesh-granularity=cross`.
+In this topology all nodes within the same subnet are not encrypted. Traffic to any other node outside of current subnet is encrypted
+with direct node-to-node encryption. To use this mesh specify `--mesh-granularity=subnet`.
 
 ## Mixed 
 

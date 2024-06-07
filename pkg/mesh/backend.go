@@ -50,9 +50,9 @@ const (
 	// FullGranularity indicates that the network should create
 	// a mesh between every node.
 	FullGranularity Granularity = "full"
-	// CrossGranularity indicates that network is encrypted only
-	// between nodes in different locations.
-	CrossGranularity Granularity = "cross"
+	// SubnetGranularity indicates that network is encrypted only
+	// between nodes in different subnets.
+	SubnetGranularity Granularity = "subnet"
 	// AutoGranularity can be used with kgctl to obtain
 	// the granularity automatically.
 	AutoGranularity Granularity = "auto"
